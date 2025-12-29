@@ -1,0 +1,47 @@
+# Configuración del Sistema de Corrección RF
+# ==========================================
+
+# Archivos de entrada
+input_files:
+  physical_parameters: "data/input/table_physical_parameters.xlsx"
+  anomalous_data: "data/input/table_cell_monitoring.xlsx"
+  anomalous_sheet: "anomalous_stations_data"
+
+# Archivos de salida
+output_files:
+  corrected_data_dir: "data/output/corrected/"
+  reports_dir: "data/output/reports/"
+  backups_dir: "data/output/backups/"
+  logs_dir: "logs/"
+
+# Parámetros de validación geográfica (Bolivia)
+geographic_validation:
+  latitude_min: -23.0
+  latitude_max: -9.0
+  longitude_min: -70.0
+  longitude_max: -57.0
+
+# Parámetros de validación de estructura
+structure_validation:
+  height_min: 3.0
+  height_max: 100.0
+  
+# Umbral de diferencia de coordenadas para considerar iguales (grados)
+coordinate_threshold: 0.001
+
+# Prioridad de tipos de estructura (mayor = mayor prioridad)
+structure_type_priority:
+  "(S) Selfsupported": 3
+  "(M) Monopole": 2
+  "(R) Rooftop": 1
+  "POLE": 0
+  "-": -1
+
+# Opciones de procesamiento
+processing:
+  create_backup: true
+  verbose_logging: true
+  require_manual_review_threshold: 0.5  # Si hay > 50% de discrepancia
+
+# Usuario del sistema
+system_user: "auto_correction_engine"
