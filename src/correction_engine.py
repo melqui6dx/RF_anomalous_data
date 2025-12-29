@@ -13,26 +13,34 @@ class RFDataCorrectionEngine:
     def __init__(self, physical_params_file, config):
         """
         Inicializa el motor con el archivo de parámetros físicos
-        
+
         Args:
             physical_params_file: Ruta al archivo Excel de parámetros físicos
             config: Diccionario con configuración del sistema
         """
         self.logger = logging.getLogger(__name__)
         self.config = config
-        
+        self.physical_params_file = physical_params_file
+
         self.logger.info(f"Cargando archivo: {physical_params_file}")
-        self.df_physical = pd.read_excel(physical_params_file)
-        self.logger.info(f"Archivo cargado: {len(self.df_physical)} filas")
-        
+
+        # Cargar TODAS las hojas del archivo
+        self.all_sheets = pd.read_excel(physical_params_file, sheet_name=None)
+        self.logger.info(f"Hojas encontradas: {list(self.all_sheets.keys())}")
+
+        # Para compatibilidad, mantener df_physical como la primera hoja o combinar todas
+        # Combinamos todas las hojas en un solo DataFrame
+        self.df_physical = pd.concat(self.all_sheets.values(), ignore_index=True)
+        self.logger.info(f"Total de filas cargadas: {len(self.df_physical)}")
+
         self.corrections_log = []
         self.manual_review_required = []
-        
+
         # Validación de columnas requeridas
-        required_columns = ['station_id', 'name', 'latitude', 'longitude', 
+        required_columns = ['station_id', 'name', 'latitude', 'longitude',
                           'structure_height', 'structure_owner', 'structure_type']
         missing_columns = [col for col in required_columns if col not in self.df_physical.columns]
-        
+
         if missing_columns:
             raise ValueError(f"Columnas faltantes en el archivo: {missing_columns}")
     
@@ -239,37 +247,179 @@ class RFDataCorrectionEngine:
     def calculate_discrepancy_score(self, values_list):
         """
         Calcula un score de discrepancia (0-1, donde 1 = máxima discrepancia)
-        
+
         Args:
             values_list: Lista de valores
-            
+
         Returns:
             Score de discrepancia
         """
         if not values_list or len(values_list) <= 1:
             return 0.0
-        
+
         unique_values = len(set(str(v) for v in values_list if v))
         total_values = len([v for v in values_list if v])
-        
+
         if total_values == 0:
             return 0.0
-        
+
         return (unique_values - 1) / total_values
+
+    def detect_extended_cells(self, station_id):
+        """
+        Detecta celdas extendidas en la hoja LTE
+
+        Args:
+            station_id: ID de la estación
+
+        Returns:
+            Lista de sectores que son celdas extendidas
+        """
+        extended_cells = []
+
+        # Buscar en la hoja LTE
+        if 'lte' in self.all_sheets or 'LTE' in self.all_sheets:
+            sheet_name = 'lte' if 'lte' in self.all_sheets else 'LTE'
+            df_lte = self.all_sheets[sheet_name]
+
+            # Buscar sectores de esta estación
+            mask = df_lte['station_id'] == station_id
+            station_sectors = df_lte[mask]
+
+            # Detectar celdas extendidas (pueden tener sufijo _1, _2, etc. o carrier adicional)
+            for idx, row in station_sectors.iterrows():
+                sector_id = row.get('sector_id', '')
+                cell_name = row.get('name', '')
+
+                # Detectar patrones de celdas extendidas
+                if '_' in str(sector_id) or 'extended' in str(cell_name).lower():
+                    extended_cells.append({
+                        'sector_id': sector_id,
+                        'name': cell_name,
+                        'row_index': idx
+                    })
+
+        return extended_cells
+
+    def search_sector_info_all_sheets(self, station_id, sector_id=None, technology=None):
+        """
+        Busca información del sector en TODAS las hojas, priorizando coincidencia de tecnología
+
+        Args:
+            station_id: ID de la estación
+            sector_id: ID del sector (opcional)
+            technology: Tecnología preferida (lte, umts, gsm) para priorizar resultados
+
+        Returns:
+            Diccionario con la información encontrada, priorizando tecnología coincidente
+        """
+        results_by_priority = {
+            'matching_tech': [],  # Coincide tecnología
+            'other_tech': []       # Otras tecnologías
+        }
+
+        # Buscar en todas las hojas
+        for sheet_name, df_sheet in self.all_sheets.items():
+            # Filtrar por station_id
+            mask = df_sheet['station_id'] == station_id
+
+            # Si tenemos sector_id, filtrar también por eso
+            if sector_id and 'sector_id' in df_sheet.columns:
+                mask = mask & (df_sheet['sector_id'] == sector_id)
+
+            matches = df_sheet[mask]
+
+            if len(matches) > 0:
+                # Determinar si coincide la tecnología
+                sheet_tech = sheet_name.lower()
+                is_matching_tech = (technology and sheet_tech == technology.lower())
+
+                for idx, row in matches.iterrows():
+                    sector_data = {
+                        'sheet_name': sheet_name,
+                        'technology': sheet_name,
+                        'station_id': row.get('station_id'),
+                        'sector_id': row.get('sector_id'),
+                        'name': row.get('name'),
+                        'latitude': row.get('latitude'),
+                        'longitude': row.get('longitude'),
+                        'structure_height': row.get('structure_height'),
+                        'structure_owner': row.get('structure_owner'),
+                        'structure_type': row.get('structure_type'),
+                        'row_index': idx
+                    }
+
+                    if is_matching_tech:
+                        results_by_priority['matching_tech'].append(sector_data)
+                    else:
+                        results_by_priority['other_tech'].append(sector_data)
+
+        # Retornar primero los que coinciden en tecnología, luego los otros
+        all_results = results_by_priority['matching_tech'] + results_by_priority['other_tech']
+
+        if all_results:
+            self.logger.info(f"Encontrados {len(all_results)} sectores para station_id={station_id}, "
+                           f"{len(results_by_priority['matching_tech'])} con tecnología coincidente")
+
+        return all_results
+
+    def complete_blank_fields(self, station_id, current_data, technology=None):
+        """
+        Completa campos en blanco buscando en todas las hojas
+
+        Args:
+            station_id: ID de la estación
+            current_data: Diccionario con datos actuales (pueden tener valores en blanco)
+            technology: Tecnología para priorizar búsqueda
+
+        Returns:
+            Diccionario con campos completados
+        """
+        # Buscar información en todas las hojas
+        sector_info = self.search_sector_info_all_sheets(
+            station_id,
+            sector_id=current_data.get('sector_id'),
+            technology=technology
+        )
+
+        if not sector_info:
+            self.logger.warning(f"No se encontró información adicional para station_id={station_id}")
+            return current_data
+
+        completed_data = current_data.copy()
+        fields_to_complete = ['name', 'latitude', 'longitude', 'structure_height',
+                            'structure_owner', 'structure_type']
+
+        # Completar campos en blanco
+        for field in fields_to_complete:
+            if pd.isna(completed_data.get(field)) or completed_data.get(field) == '' or completed_data.get(field) is None:
+                # Buscar en los resultados (ya están priorizados)
+                for info in sector_info:
+                    if not pd.isna(info.get(field)) and info.get(field) != '':
+                        completed_data[field] = info[field]
+                        self.logger.info(f"Campo '{field}' completado desde hoja '{info['sheet_name']}': {info[field]}")
+                        break
+
+        return completed_data
     
     def process_anomalous_station(self, station_data):
         """
         Procesa una estación anómala y determina valores correctos
-        
+
         Args:
             station_data: Serie de pandas con datos de la estación anómala
-            
+
         Returns:
             Diccionario con valores correctos determinados
         """
         station_id = station_data['station_id']
         self.logger.info(f"Procesando estación: {station_id}")
-        
+
+        # Detectar celdas extendidas en LTE
+        extended_cells = self.detect_extended_cells(station_id)
+        if extended_cells:
+            self.logger.info(f"Detectadas {len(extended_cells)} celdas extendidas en LTE para {station_id}")
+
         # Parsear listas
         names = self.parse_list_values(station_data['name'])
         lats = self.parse_list_values(station_data['latitude'])
@@ -277,7 +427,7 @@ class RFDataCorrectionEngine:
         heights = self.parse_list_values(station_data['structure_height'])
         owners = self.parse_list_values(station_data['structure_owner'])
         types = self.parse_list_values(station_data['structure_type'])
-        
+
         # Calcular scores de discrepancia
         discrepancy_scores = {
             'latitude': self.calculate_discrepancy_score(lats),
@@ -287,9 +437,9 @@ class RFDataCorrectionEngine:
             'structure_owner': self.calculate_discrepancy_score(owners),
             'structure_type': self.calculate_discrepancy_score(types)
         }
-        
+
         avg_discrepancy = np.mean(list(discrepancy_scores.values()))
-        
+
         # Determinar valores correctos
         correct_values = {
             'station_id': station_id,
@@ -301,7 +451,14 @@ class RFDataCorrectionEngine:
             'structure_type': self.select_best_structure_type(types),
             'discrepancy_score': avg_discrepancy
         }
-        
+
+        # Extraer tecnología si está disponible
+        technology = station_data.get('technology', None)
+
+        # NUEVO: Completar campos en blanco usando búsqueda multi-hoja
+        self.logger.info(f"Completando campos en blanco para {station_id}")
+        correct_values = self.complete_blank_fields(station_id, correct_values, technology)
+
         # Marcar para revisión manual si discrepancia es alta
         threshold = self.config['processing']['require_manual_review_threshold']
         if avg_discrepancy > threshold:
@@ -318,54 +475,78 @@ class RFDataCorrectionEngine:
                     'owners': owners,
                     'types': types
                 },
-                'proposed_values': correct_values
+                'proposed_values': correct_values,
+                'extended_cells': extended_cells
             })
-        
+
         return correct_values
     
     def apply_corrections(self, station_id, correct_values):
         """
-        Aplica correcciones al DataFrame de parámetros físicos
-        
+        Aplica correcciones al DataFrame de parámetros físicos y a todas las hojas
+
         Args:
             station_id: ID de la estación
             correct_values: Diccionario con valores correctos
-            
+
         Returns:
             Lista de correcciones realizadas
         """
-        mask = self.df_physical['station_id'] == station_id
-        affected_rows = self.df_physical[mask].index
-        
-        if len(affected_rows) == 0:
-            self.logger.warning(f"Estación {station_id} no encontrada en archivo físico")
-            return []
-        
         corrections_made = []
-        
-        for param, new_value in correct_values.items():
-            if param in ['station_id', 'discrepancy_score'] or new_value is None:
+        total_rows_affected = 0
+
+        # Aplicar correcciones en TODAS las hojas
+        for sheet_name, df_sheet in self.all_sheets.items():
+            mask = df_sheet['station_id'] == station_id
+            affected_rows = df_sheet[mask].index
+
+            if len(affected_rows) == 0:
                 continue
-            
-            # Obtener valores actuales únicos
-            old_values = self.df_physical.loc[mask, param].unique().tolist()
-            
-            # Aplicar corrección solo si hay cambio
-            if len(old_values) > 1 or old_values[0] != new_value:
-                self.df_physical.loc[mask, param] = new_value
-                
-                correction_record = {
-                    'station_id': station_id,
-                    'parameter': param,
-                    'old_values': old_values,
-                    'new_value': new_value,
-                    'rows_affected': len(affected_rows),
-                    'timestamp': datetime.now().isoformat()
-                }
-                
-                corrections_made.append(correction_record)
-                self.logger.info(f"  ✓ {param}: {old_values} → {new_value}")
-        
+
+            self.logger.info(f"Aplicando correcciones en hoja '{sheet_name}': {len(affected_rows)} filas")
+
+            for param, new_value in correct_values.items():
+                if param in ['station_id', 'discrepancy_score', 'sector_id'] or new_value is None:
+                    continue
+
+                # Verificar que la columna existe en esta hoja
+                if param not in df_sheet.columns:
+                    continue
+
+                # Obtener valores actuales únicos
+                old_values = df_sheet.loc[mask, param].unique().tolist()
+
+                # Aplicar corrección solo si hay cambio
+                if len(old_values) > 1 or (len(old_values) > 0 and old_values[0] != new_value):
+                    df_sheet.loc[mask, param] = new_value
+
+                    correction_record = {
+                        'station_id': station_id,
+                        'sheet_name': sheet_name,
+                        'parameter': param,
+                        'old_values': old_values,
+                        'new_value': new_value,
+                        'rows_affected': len(affected_rows),
+                        'timestamp': datetime.now().isoformat()
+                    }
+
+                    corrections_made.append(correction_record)
+                    self.logger.info(f"  ✓ [{sheet_name}] {param}: {old_values} → {new_value}")
+
+            total_rows_affected += len(affected_rows)
+
+        # Actualizar también el DataFrame consolidado
+        mask_consolidated = self.df_physical['station_id'] == station_id
+        if mask_consolidated.any():
+            for param, new_value in correct_values.items():
+                if param in ['station_id', 'discrepancy_score'] or new_value is None:
+                    continue
+                if param in self.df_physical.columns:
+                    self.df_physical.loc[mask_consolidated, param] = new_value
+
+        if total_rows_affected == 0:
+            self.logger.warning(f"Estación {station_id} no encontrada en ninguna hoja")
+
         return corrections_made
     
     def process_anomalous_file(self, anomalous_file, sheet_name='anomalous_stations_data'):
@@ -408,17 +589,27 @@ class RFDataCorrectionEngine:
     
     def save_corrected_data(self, output_file):
         """
-        Guarda el archivo corregido con metadatos actualizados
-        
+        Guarda el archivo corregido con metadatos actualizados en TODAS las hojas
+
         Args:
             output_file: Ruta donde guardar el archivo corregido
         """
-        # Actualizar campos de modificación
-        self.df_physical['db_modified_by_user'] = self.config['system_user']
-        self.df_physical['db_modification_datetime'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        
-        self.df_physical.to_excel(output_file, index=False, engine='openpyxl')
-        self.logger.info(f"✓ Archivo corregido guardado: {output_file}")
+        # Actualizar campos de modificación en todas las hojas
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+            for sheet_name, df_sheet in self.all_sheets.items():
+                # Actualizar metadatos si las columnas existen
+                if 'db_modified_by_user' in df_sheet.columns:
+                    df_sheet['db_modified_by_user'] = self.config['system_user']
+                if 'db_modification_datetime' in df_sheet.columns:
+                    df_sheet['db_modification_datetime'] = timestamp
+
+                # Guardar hoja
+                df_sheet.to_excel(writer, sheet_name=sheet_name, index=False)
+                self.logger.info(f"✓ Hoja '{sheet_name}' guardada: {len(df_sheet)} filas")
+
+        self.logger.info(f"✓ Archivo corregido guardado con {len(self.all_sheets)} hojas: {output_file}")
     
     def generate_correction_report(self, report_file):
         """
