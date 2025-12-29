@@ -5,18 +5,22 @@ from collections import Counter
 import re
 import logging
 
+from src.template_manager import TemplateManager
+from src.extended_cell_detector import ExtendedCellDetector
+
 class RFDataCorrectionEngine:
     """
     Motor de corrección automática de datos de sitios RF
     """
     
-    def __init__(self, physical_params_file, config):
+    def __init__(self, physical_params_file, config, template_file=None):
         """
         Inicializa el motor con el archivo de parámetros físicos
 
         Args:
             physical_params_file: Ruta al archivo Excel de parámetros físicos
             config: Diccionario con configuración del sistema
+            template_file: Ruta al archivo template de referencia (opcional)
         """
         self.logger = logging.getLogger(__name__)
         self.config = config
@@ -35,6 +39,20 @@ class RFDataCorrectionEngine:
 
         self.corrections_log = []
         self.manual_review_required = []
+        self.extended_cells_detected = []
+
+        # Inicializar gestor de template
+        self.template_manager = None
+        if template_file and config['processing'].get('use_template_as_reference', False):
+            try:
+                self.template_manager = TemplateManager(template_file, config)
+            except Exception as e:
+                self.logger.warning(f"No se pudo cargar template: {e}")
+
+        # Inicializar detector de extended cells
+        self.extended_detector = None
+        if config['processing'].get('detect_extended_cells', False):
+            self.extended_detector = ExtendedCellDetector(config)
 
         # Validación de columnas requeridas
         required_columns = ['station_id', 'name', 'latitude', 'longitude',
@@ -148,25 +166,36 @@ class RFDataCorrectionEngine:
         
         return round(np.median(valid_lons), 6)
     
-    def select_best_name(self, name_list):
+    def select_best_name(self, name_list, station_id=None):
         """
-        Selecciona el mejor nombre (más completo)
-        
+        Selecciona el mejor nombre usando template como referencia
+
         Args:
-            name_list: Lista de nombres
-            
+            name_list: Lista de nombres candidatos
+            station_id: ID de la estación (para consultar template)
+
         Returns:
             Nombre seleccionado o None
         """
         if not name_list:
             return None
-        
+
         valid_names = [str(n).strip() for n in name_list if n and str(n).strip()]
-        
+
         if not valid_names:
             return None
-        
-        # Seleccionar el más largo (generalmente más completo)
+
+        # Consultar template si está disponible
+        if self.template_manager and station_id:
+            template_name = self.template_manager.get_reference_name(
+                station_id,
+                valid_names
+            )
+
+            if template_name:
+                return template_name
+
+        # Algoritmo por defecto: seleccionar el más largo (generalmente más completo)
         return max(valid_names, key=len)
     
     def select_best_structure_height(self, height_list):
@@ -401,7 +430,75 @@ class RFDataCorrectionEngine:
                         break
 
         return completed_data
-    
+
+    def detect_and_mark_extended_cells(self, station_id):
+        """
+        Detecta y marca sectores extendidos para una estación
+
+        Utiliza el ExtendedCellDetector para identificar sectores que:
+        1. Siguen nomenclatura [station_id]R[n]
+        2. Están a > threshold de distancia de la ubicación principal
+        3. Pertenecen al mismo station_id
+
+        Args:
+            station_id: ID de la estación
+
+        Returns:
+            Lista de station_cell_id marcados como extended cells
+        """
+        if not self.extended_detector:
+            return []
+
+        # Obtener datos de todas las hojas para esta estación
+        all_station_data = []
+        for sheet_name, df_sheet in self.all_sheets.items():
+            mask = df_sheet['station_id'] == station_id
+            station_data = df_sheet[mask]
+            if len(station_data) > 0:
+                all_station_data.append(station_data)
+
+        if not all_station_data:
+            return []
+
+        # Combinar datos de todas las hojas
+        combined_station_data = pd.concat(all_station_data, ignore_index=True)
+
+        # Detectar extended cells
+        extended_cells = self.extended_detector.detect_extended_cells_in_station(
+            combined_station_data
+        )
+
+        if extended_cells:
+            # Marcar en TODAS las hojas
+            for sheet_name in self.all_sheets.keys():
+                self.all_sheets[sheet_name] = self.extended_detector.mark_extended_cells(
+                    self.all_sheets[sheet_name],
+                    extended_cells
+                )
+
+            # También marcar en el DataFrame consolidado
+            self.df_physical = self.extended_detector.mark_extended_cells(
+                self.df_physical,
+                extended_cells
+            )
+
+            # Registrar para el reporte
+            for cell_id in extended_cells:
+                # Obtener coordenadas del extended cell
+                cell_mask = combined_station_data['station_cell_id'] == cell_id
+                if cell_mask.any():
+                    cell_data = combined_station_data[cell_mask].iloc[0]
+
+                    self.extended_cells_detected.append({
+                        'station_id': station_id,
+                        'station_cell_id': cell_id,
+                        'latitude': cell_data.get('latitude'),
+                        'longitude': cell_data.get('longitude'),
+                        'action': 'marked_as_extended_cell'
+                    })
+
+        return extended_cells
+
     def process_anomalous_station(self, station_data):
         """
         Procesa una estación anómala y determina valores correctos
@@ -415,10 +512,12 @@ class RFDataCorrectionEngine:
         station_id = station_data['station_id']
         self.logger.info(f"Procesando estación: {station_id}")
 
-        # Detectar celdas extendidas en LTE
-        extended_cells = self.detect_extended_cells(station_id)
+        # Detectar sectores extendidos usando ExtendedCellDetector
+        extended_cells = self.detect_and_mark_extended_cells(station_id)
         if extended_cells:
-            self.logger.info(f"Detectadas {len(extended_cells)} celdas extendidas en LTE para {station_id}")
+            self.logger.info(
+                f"  🔄 Estación con sectores extendidos detectados: {len(extended_cells)}"
+            )
 
         # Parsear listas
         names = self.parse_list_values(station_data['name'])
@@ -440,29 +539,37 @@ class RFDataCorrectionEngine:
 
         avg_discrepancy = np.mean(list(discrepancy_scores.values()))
 
-        # Determinar valores correctos
+        # Determinar valores correctos (usando template cuando esté disponible)
         correct_values = {
             'station_id': station_id,
-            'name': self.select_best_name(names),
-            'latitude': self.select_best_latitude(lats),
-            'longitude': self.select_best_longitude(lons),
+            'name': self.select_best_name(names, station_id),  # Pasamos station_id para template
+            'latitude': self.select_best_latitude(lats) if not extended_cells else None,  # No corregir si hay extended cells
+            'longitude': self.select_best_longitude(lons) if not extended_cells else None,  # No corregir si hay extended cells
             'structure_height': self.select_best_structure_height(heights),
             'structure_owner': self.select_best_structure_owner(owners),
             'structure_type': self.select_best_structure_type(types),
-            'discrepancy_score': avg_discrepancy
+            'discrepancy_score': avg_discrepancy,
+            'has_extended_cells': len(extended_cells) > 0
         }
 
-        # Extraer tecnología si está disponible
+        # Completar campos en blanco usando búsqueda multi-hoja Y template
         technology = station_data.get('technology', None)
-
-        # NUEVO: Completar campos en blanco usando búsqueda multi-hoja
         self.logger.info(f"Completando campos en blanco para {station_id}")
         correct_values = self.complete_blank_fields(station_id, correct_values, technology)
 
-        # Marcar para revisión manual si discrepancia es alta
+        # NUEVO: Rellenar parámetros faltantes desde template
+        if self.template_manager:
+            correct_values = self.template_manager.fill_missing_parameters(
+                station_id,
+                correct_values
+            )
+
+        # Marcar para revisión manual si discrepancia es alta (pero no si tiene extended cells)
         threshold = self.config['processing']['require_manual_review_threshold']
-        if avg_discrepancy > threshold:
-            self.logger.warning(f"Estación {station_id} requiere revisión manual (score: {avg_discrepancy:.2f})")
+        if avg_discrepancy > threshold and not extended_cells:
+            self.logger.warning(
+                f"Estación {station_id} requiere revisión manual (score: {avg_discrepancy:.2f})"
+            )
             self.manual_review_required.append({
                 'station_id': station_id,
                 'discrepancy_score': avg_discrepancy,
@@ -495,6 +602,9 @@ class RFDataCorrectionEngine:
         corrections_made = []
         total_rows_affected = 0
 
+        # Verificar si hay extended cells (para saltar coordenadas)
+        skip_coords = correct_values.get('has_extended_cells', False)
+
         # Aplicar correcciones en TODAS las hojas
         for sheet_name, df_sheet in self.all_sheets.items():
             mask = df_sheet['station_id'] == station_id
@@ -506,7 +616,15 @@ class RFDataCorrectionEngine:
             self.logger.info(f"Aplicando correcciones en hoja '{sheet_name}': {len(affected_rows)} filas")
 
             for param, new_value in correct_values.items():
-                if param in ['station_id', 'discrepancy_score', 'sector_id'] or new_value is None:
+                if param in ['station_id', 'discrepancy_score', 'sector_id', 'has_extended_cells'] or new_value is None:
+                    continue
+
+                # Saltar coordenadas si hay extended cells
+                if skip_coords and param in ['latitude', 'longitude']:
+                    self.logger.info(
+                        f"  ⏭️  Saltando corrección de {param} en hoja '{sheet_name}' "
+                        f"(estación con extended cells)"
+                    )
                     continue
 
                 # Verificar que la columna existe en esta hoja
@@ -520,13 +638,19 @@ class RFDataCorrectionEngine:
                 if len(old_values) > 1 or (len(old_values) > 0 and old_values[0] != new_value):
                     df_sheet.loc[mask, param] = new_value
 
+                    # Determinar fuente de la corrección
+                    source = 'algorithm'  # Por defecto
+                    if self.template_manager and param in ['structure_owner', 'structure_type', 'tx_type', 'name']:
+                        source = 'template'
+
                     correction_record = {
                         'station_id': station_id,
                         'sheet_name': sheet_name,
                         'parameter': param,
-                        'old_values': old_values,
+                        'old_values': str(old_values),  # Convertir a string para evitar problemas con Excel
                         'new_value': new_value,
                         'rows_affected': len(affected_rows),
+                        'source': source,
                         'timestamp': datetime.now().isoformat()
                     }
 
@@ -539,8 +663,13 @@ class RFDataCorrectionEngine:
         mask_consolidated = self.df_physical['station_id'] == station_id
         if mask_consolidated.any():
             for param, new_value in correct_values.items():
-                if param in ['station_id', 'discrepancy_score'] or new_value is None:
+                if param in ['station_id', 'discrepancy_score', 'has_extended_cells'] or new_value is None:
                     continue
+
+                # Saltar coordenadas si hay extended cells
+                if skip_coords and param in ['latitude', 'longitude']:
+                    continue
+
                 if param in self.df_physical.columns:
                     self.df_physical.loc[mask_consolidated, param] = new_value
 

@@ -6,6 +6,7 @@ input_files:
   physical_parameters: "data/input/table_physical_parameters.xlsx"
   anomalous_data: "data/input/table_cell_monitoring.xlsx"
   anomalous_sheet: "anomalous_stations_data"
+  template_reference: "data/input/template_cells_con_datos(LTE-FDD cargado).xlsx"  # NUEVO
 
 # Archivos de salida
 output_files:
@@ -25,9 +26,13 @@ geographic_validation:
 structure_validation:
   height_min: 3.0
   height_max: 100.0
-  
+
 # Umbral de diferencia de coordenadas para considerar iguales (grados)
 coordinate_threshold: 0.001
+
+# NUEVO: Umbral para detectar sectores extendidos
+# ~1km ≈ 0.009°, ~500m ≈ 0.0045°, ~1.1km ≈ 0.01°
+extended_cell_distance_threshold: 0.01  # ~1.1 km
 
 # Prioridad de tipos de estructura (mayor = mayor prioridad)
 structure_type_priority:
@@ -37,11 +42,18 @@ structure_type_priority:
   "POLE": 0
   "-": -1
 
+# NUEVO: Parámetros para fuzzy matching de nombres
+name_similarity:
+  use_fuzzy_matching: true
+  similarity_threshold: 0.7  # 70% de similitud mínima
+
 # Opciones de procesamiento
 processing:
   create_backup: true
   verbose_logging: true
   require_manual_review_threshold: 0.5  # Si hay > 50% de discrepancia
+  use_template_as_reference: true  # NUEVO: Usar template como fuente de verdad
+  detect_extended_cells: true  # NUEVO: Detectar sectores extendidos
 
 # Usuario del sistema
 system_user: "auto_correction_engine"
