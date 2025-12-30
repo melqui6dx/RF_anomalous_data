@@ -44,8 +44,6 @@ class RFDataCorrectionEngine:
 
         self.corrections_log = []
         self.manual_review_required = []
-<<<<<<< Updated upstream
-=======
         self.extended_cells_detected = []
         
         # Inicializar gestor de template
@@ -70,7 +68,6 @@ class RFDataCorrectionEngine:
                 self.logger.info("✓ Extended Cell Detector inicializado correctamente")
             except Exception as e:
                 self.logger.warning(f"No se pudo inicializar detector de extended cells: {e}")
->>>>>>> Stashed changes
 
         # Validación de columnas requeridas
         required_columns = ['station_id', 'name', 'latitude', 'longitude',
@@ -314,11 +311,7 @@ class RFDataCorrectionEngine:
 
     def detect_extended_cells(self, station_id):
         """
-<<<<<<< Updated upstream
-        Detecta celdas extendidas en la hoja LTE
-=======
         Detecta celdas extendidas en la hoja LTE (método legacy - mantener compatibilidad)
->>>>>>> Stashed changes
 
         Args:
             station_id: ID de la estación
@@ -434,11 +427,7 @@ class RFDataCorrectionEngine:
         )
 
         if not sector_info:
-<<<<<<< Updated upstream
-            self.logger.warning(f"No se encontró información adicional para station_id={station_id}")
-=======
             self.logger.debug(f"No se encontró información adicional para station_id={station_id}")
->>>>>>> Stashed changes
             return current_data
 
         completed_data = current_data.copy()
@@ -447,23 +436,15 @@ class RFDataCorrectionEngine:
 
         # Completar campos en blanco
         for field in fields_to_complete:
-<<<<<<< Updated upstream
-            if pd.isna(completed_data.get(field)) or completed_data.get(field) == '' or completed_data.get(field) is None:
-=======
             current_val = completed_data.get(field)
             is_empty = pd.isna(current_val) or current_val == '' or current_val is None
             
             if is_empty:
->>>>>>> Stashed changes
                 # Buscar en los resultados (ya están priorizados)
                 for info in sector_info:
                     if not pd.isna(info.get(field)) and info.get(field) != '':
                         completed_data[field] = info[field]
-<<<<<<< Updated upstream
-                        self.logger.info(f"Campo '{field}' completado desde hoja '{info['sheet_name']}': {info[field]}")
-=======
                         self.logger.info(f"  📋 Campo '{field}' completado desde hoja '{info['sheet_name']}': {info[field]}")
->>>>>>> Stashed changes
                         break
 
         return completed_data
@@ -480,13 +461,6 @@ class RFDataCorrectionEngine:
         """
         station_id = station_data['station_id']
         self.logger.info(f"Procesando estación: {station_id}")
-<<<<<<< Updated upstream
-
-        # Detectar celdas extendidas en LTE
-        extended_cells = self.detect_extended_cells(station_id)
-        if extended_cells:
-            self.logger.info(f"Detectadas {len(extended_cells)} celdas extendidas en LTE para {station_id}")
-=======
         
         # Detectar sectores extendidos usando el nuevo detector
         extended_cells = []
@@ -524,7 +498,6 @@ class RFDataCorrectionEngine:
             extended_cells_legacy = self.detect_extended_cells(station_id)
             if extended_cells_legacy:
                 self.logger.info(f"  🔄 Detectadas {len(extended_cells_legacy)} celdas extendidas (método legacy)")
->>>>>>> Stashed changes
 
         # Parsear listas
         names = self.parse_list_values(station_data['name'])
@@ -562,11 +535,6 @@ class RFDataCorrectionEngine:
         # Extraer tecnología si está disponible
         technology = station_data.get('technology', None)
 
-<<<<<<< Updated upstream
-        # NUEVO: Completar campos en blanco usando búsqueda multi-hoja
-        self.logger.info(f"Completando campos en blanco para {station_id}")
-        correct_values = self.complete_blank_fields(station_id, correct_values, technology)
-=======
         # Completar campos en blanco usando búsqueda multi-hoja
         self.logger.info(f"Completando campos en blanco para {station_id}")
         correct_values = self.complete_blank_fields(station_id, correct_values, technology)
@@ -577,7 +545,6 @@ class RFDataCorrectionEngine:
                 station_id,
                 correct_values
             )
->>>>>>> Stashed changes
 
         # Marcar para revisión manual si discrepancia es alta
         threshold = self.config['processing']['require_manual_review_threshold']
@@ -614,12 +581,9 @@ class RFDataCorrectionEngine:
         """
         corrections_made = []
         total_rows_affected = 0
-<<<<<<< Updated upstream
-=======
         
         # No corregir coordenadas si hay extended cells
         skip_coords = correct_values.get('has_extended_cells', False)
->>>>>>> Stashed changes
 
         # Aplicar correcciones en TODAS las hojas
         for sheet_name, df_sheet in self.all_sheets.items():
@@ -632,9 +596,6 @@ class RFDataCorrectionEngine:
             self.logger.info(f"Aplicando correcciones en hoja '{sheet_name}': {len(affected_rows)} filas")
 
             for param, new_value in correct_values.items():
-<<<<<<< Updated upstream
-                if param in ['station_id', 'discrepancy_score', 'sector_id'] or new_value is None:
-=======
                 if param in ['station_id', 'discrepancy_score', 'sector_id', 'has_extended_cells']:
                     continue
                 
@@ -644,7 +605,6 @@ class RFDataCorrectionEngine:
                         f"  ⏭️  Saltando corrección de {param} "
                         f"(estación con extended cells)"
                     )
->>>>>>> Stashed changes
                     continue
 
                 # Verificar que la columna existe en esta hoja
@@ -662,18 +622,11 @@ class RFDataCorrectionEngine:
                         'station_id': station_id,
                         'sheet_name': sheet_name,
                         'parameter': param,
-<<<<<<< Updated upstream
-                        'old_values': old_values,
-                        'new_value': new_value,
-                        'rows_affected': len(affected_rows),
-                        'timestamp': datetime.now().isoformat()
-=======
                         'old_values': str(old_values),
                         'new_value': new_value,
                         'rows_affected': len(affected_rows),
                         'timestamp': datetime.now().isoformat(),
                         'source': 'template' if self.template_manager and param in ['structure_owner', 'structure_type', 'tx_type', 'name'] else 'algorithm'
->>>>>>> Stashed changes
                     }
 
                     corrections_made.append(correction_record)
@@ -685,13 +638,9 @@ class RFDataCorrectionEngine:
         mask_consolidated = self.df_physical['station_id'] == station_id
         if mask_consolidated.any():
             for param, new_value in correct_values.items():
-<<<<<<< Updated upstream
-                if param in ['station_id', 'discrepancy_score'] or new_value is None:
-=======
                 if param in ['station_id', 'discrepancy_score', 'has_extended_cells']:
                     continue
                 if skip_coords and param in ['latitude', 'longitude']:
->>>>>>> Stashed changes
                     continue
                 if param in self.df_physical.columns:
                     self.df_physical.loc[mask_consolidated, param] = new_value
