@@ -5,18 +5,28 @@ from collections import Counter
 import re
 import logging
 
+# Importar los nuevos módulos con manejo de errores
+try:
+    from src.template_manager import TemplateManager
+    from src.extended_cell_detector import ExtendedCellDetector
+    MODULES_AVAILABLE = True
+except ImportError:
+    MODULES_AVAILABLE = False
+    logging.warning("TemplateManager y/o ExtendedCellDetector no disponibles")
+
 class RFDataCorrectionEngine:
     """
     Motor de corrección automática de datos de sitios RF
     """
     
-    def __init__(self, physical_params_file, config):
+    def __init__(self, physical_params_file, config, template_file=None):
         """
         Inicializa el motor con el archivo de parámetros físicos
 
         Args:
             physical_params_file: Ruta al archivo Excel de parámetros físicos
             config: Diccionario con configuración del sistema
+            template_file: Ruta al archivo template de referencia (opcional)
         """
         self.logger = logging.getLogger(__name__)
         self.config = config
@@ -28,13 +38,39 @@ class RFDataCorrectionEngine:
         self.all_sheets = pd.read_excel(physical_params_file, sheet_name=None)
         self.logger.info(f"Hojas encontradas: {list(self.all_sheets.keys())}")
 
-        # Para compatibilidad, mantener df_physical como la primera hoja o combinar todas
-        # Combinamos todas las hojas en un solo DataFrame
+        # Combinar todas las hojas en un solo DataFrame
         self.df_physical = pd.concat(self.all_sheets.values(), ignore_index=True)
         self.logger.info(f"Total de filas cargadas: {len(self.df_physical)}")
 
         self.corrections_log = []
         self.manual_review_required = []
+<<<<<<< Updated upstream
+=======
+        self.extended_cells_detected = []
+        
+        # Inicializar gestor de template
+        self.template_manager = None
+        if MODULES_AVAILABLE and template_file and config['processing'].get('use_template_as_reference', False):
+            try:
+                self.template_manager = TemplateManager(template_file, config)
+                if self.template_manager.is_available():
+                    self.logger.info("✓ Template Manager inicializado correctamente")
+                else:
+                    self.logger.warning("Template Manager cargado pero sin datos")
+                    self.template_manager = None
+            except Exception as e:
+                self.logger.warning(f"No se pudo cargar template: {e}")
+                self.template_manager = None
+        
+        # Inicializar detector de extended cells
+        self.extended_detector = None
+        if MODULES_AVAILABLE and config['processing'].get('detect_extended_cells', False):
+            try:
+                self.extended_detector = ExtendedCellDetector(config)
+                self.logger.info("✓ Extended Cell Detector inicializado correctamente")
+            except Exception as e:
+                self.logger.warning(f"No se pudo inicializar detector de extended cells: {e}")
+>>>>>>> Stashed changes
 
         # Validación de columnas requeridas
         required_columns = ['station_id', 'name', 'latitude', 'longitude',
@@ -148,12 +184,13 @@ class RFDataCorrectionEngine:
         
         return round(np.median(valid_lons), 6)
     
-    def select_best_name(self, name_list):
+    def select_best_name(self, name_list, station_id=None):
         """
-        Selecciona el mejor nombre (más completo)
+        Selecciona el mejor nombre (más completo), con soporte de template
         
         Args:
             name_list: Lista de nombres
+            station_id: ID de la estación (para consultar template)
             
         Returns:
             Nombre seleccionado o None
@@ -166,7 +203,17 @@ class RFDataCorrectionEngine:
         if not valid_names:
             return None
         
-        # Seleccionar el más largo (generalmente más completo)
+        # Consultar template si está disponible
+        if self.template_manager and station_id:
+            template_name = self.template_manager.get_reference_name(
+                station_id, 
+                valid_names
+            )
+            
+            if template_name:
+                return template_name
+        
+        # Algoritmo por defecto: seleccionar el más largo (generalmente más completo)
         return max(valid_names, key=len)
     
     def select_best_structure_height(self, height_list):
@@ -267,7 +314,11 @@ class RFDataCorrectionEngine:
 
     def detect_extended_cells(self, station_id):
         """
+<<<<<<< Updated upstream
         Detecta celdas extendidas en la hoja LTE
+=======
+        Detecta celdas extendidas en la hoja LTE (método legacy - mantener compatibilidad)
+>>>>>>> Stashed changes
 
         Args:
             station_id: ID de la estación
@@ -383,7 +434,11 @@ class RFDataCorrectionEngine:
         )
 
         if not sector_info:
+<<<<<<< Updated upstream
             self.logger.warning(f"No se encontró información adicional para station_id={station_id}")
+=======
+            self.logger.debug(f"No se encontró información adicional para station_id={station_id}")
+>>>>>>> Stashed changes
             return current_data
 
         completed_data = current_data.copy()
@@ -392,12 +447,23 @@ class RFDataCorrectionEngine:
 
         # Completar campos en blanco
         for field in fields_to_complete:
+<<<<<<< Updated upstream
             if pd.isna(completed_data.get(field)) or completed_data.get(field) == '' or completed_data.get(field) is None:
+=======
+            current_val = completed_data.get(field)
+            is_empty = pd.isna(current_val) or current_val == '' or current_val is None
+            
+            if is_empty:
+>>>>>>> Stashed changes
                 # Buscar en los resultados (ya están priorizados)
                 for info in sector_info:
                     if not pd.isna(info.get(field)) and info.get(field) != '':
                         completed_data[field] = info[field]
+<<<<<<< Updated upstream
                         self.logger.info(f"Campo '{field}' completado desde hoja '{info['sheet_name']}': {info[field]}")
+=======
+                        self.logger.info(f"  📋 Campo '{field}' completado desde hoja '{info['sheet_name']}': {info[field]}")
+>>>>>>> Stashed changes
                         break
 
         return completed_data
@@ -414,11 +480,51 @@ class RFDataCorrectionEngine:
         """
         station_id = station_data['station_id']
         self.logger.info(f"Procesando estación: {station_id}")
+<<<<<<< Updated upstream
 
         # Detectar celdas extendidas en LTE
         extended_cells = self.detect_extended_cells(station_id)
         if extended_cells:
             self.logger.info(f"Detectadas {len(extended_cells)} celdas extendidas en LTE para {station_id}")
+=======
+        
+        # Detectar sectores extendidos usando el nuevo detector
+        extended_cells = []
+        if self.extended_detector:
+            # Obtener datos de la estación de todas las hojas
+            station_df_parts = []
+            for sheet_name, df_sheet in self.all_sheets.items():
+                mask = df_sheet['station_id'] == station_id
+                if mask.any():
+                    station_df_parts.append(df_sheet[mask])
+            
+            if station_df_parts:
+                station_df = pd.concat(station_df_parts, ignore_index=True)
+                extended_cells = self.extended_detector.detect_extended_cells_in_station(station_df)
+                
+                if extended_cells:
+                    self.logger.info(f"  🔄 {len(extended_cells)} sectores extendidos detectados")
+                    
+                    # Marcar en todas las hojas
+                    for sheet_name, df_sheet in self.all_sheets.items():
+                        self.all_sheets[sheet_name] = self.extended_detector.mark_extended_cells(
+                            df_sheet,
+                            extended_cells
+                        )
+                    
+                    # Registrar para el reporte
+                    for cell_id in extended_cells:
+                        self.extended_cells_detected.append({
+                            'station_id': station_id,
+                            'cell_id': cell_id,
+                            'action': 'marked_as_extended_cell'
+                        })
+        else:
+            # Fallback al método legacy
+            extended_cells_legacy = self.detect_extended_cells(station_id)
+            if extended_cells_legacy:
+                self.logger.info(f"  🔄 Detectadas {len(extended_cells_legacy)} celdas extendidas (método legacy)")
+>>>>>>> Stashed changes
 
         # Parsear listas
         names = self.parse_list_values(station_data['name'])
@@ -443,25 +549,39 @@ class RFDataCorrectionEngine:
         # Determinar valores correctos
         correct_values = {
             'station_id': station_id,
-            'name': self.select_best_name(names),
-            'latitude': self.select_best_latitude(lats),
-            'longitude': self.select_best_longitude(lons),
+            'name': self.select_best_name(names, station_id),
+            'latitude': self.select_best_latitude(lats) if not extended_cells else None,
+            'longitude': self.select_best_longitude(lons) if not extended_cells else None,
             'structure_height': self.select_best_structure_height(heights),
             'structure_owner': self.select_best_structure_owner(owners),
             'structure_type': self.select_best_structure_type(types),
-            'discrepancy_score': avg_discrepancy
+            'discrepancy_score': avg_discrepancy,
+            'has_extended_cells': len(extended_cells) > 0
         }
 
         # Extraer tecnología si está disponible
         technology = station_data.get('technology', None)
 
+<<<<<<< Updated upstream
         # NUEVO: Completar campos en blanco usando búsqueda multi-hoja
         self.logger.info(f"Completando campos en blanco para {station_id}")
         correct_values = self.complete_blank_fields(station_id, correct_values, technology)
+=======
+        # Completar campos en blanco usando búsqueda multi-hoja
+        self.logger.info(f"Completando campos en blanco para {station_id}")
+        correct_values = self.complete_blank_fields(station_id, correct_values, technology)
+        
+        # Rellenar parámetros faltantes desde template
+        if self.template_manager:
+            correct_values = self.template_manager.fill_missing_parameters(
+                station_id,
+                correct_values
+            )
+>>>>>>> Stashed changes
 
         # Marcar para revisión manual si discrepancia es alta
         threshold = self.config['processing']['require_manual_review_threshold']
-        if avg_discrepancy > threshold:
+        if avg_discrepancy > threshold and not extended_cells:
             self.logger.warning(f"Estación {station_id} requiere revisión manual (score: {avg_discrepancy:.2f})")
             self.manual_review_required.append({
                 'station_id': station_id,
@@ -494,6 +614,12 @@ class RFDataCorrectionEngine:
         """
         corrections_made = []
         total_rows_affected = 0
+<<<<<<< Updated upstream
+=======
+        
+        # No corregir coordenadas si hay extended cells
+        skip_coords = correct_values.get('has_extended_cells', False)
+>>>>>>> Stashed changes
 
         # Aplicar correcciones en TODAS las hojas
         for sheet_name, df_sheet in self.all_sheets.items():
@@ -506,7 +632,19 @@ class RFDataCorrectionEngine:
             self.logger.info(f"Aplicando correcciones en hoja '{sheet_name}': {len(affected_rows)} filas")
 
             for param, new_value in correct_values.items():
+<<<<<<< Updated upstream
                 if param in ['station_id', 'discrepancy_score', 'sector_id'] or new_value is None:
+=======
+                if param in ['station_id', 'discrepancy_score', 'sector_id', 'has_extended_cells']:
+                    continue
+                
+                # Saltar coordenadas si hay extended cells
+                if skip_coords and param in ['latitude', 'longitude']:
+                    self.logger.info(
+                        f"  ⏭️  Saltando corrección de {param} "
+                        f"(estación con extended cells)"
+                    )
+>>>>>>> Stashed changes
                     continue
 
                 # Verificar que la columna existe en esta hoja
@@ -524,10 +662,18 @@ class RFDataCorrectionEngine:
                         'station_id': station_id,
                         'sheet_name': sheet_name,
                         'parameter': param,
+<<<<<<< Updated upstream
                         'old_values': old_values,
                         'new_value': new_value,
                         'rows_affected': len(affected_rows),
                         'timestamp': datetime.now().isoformat()
+=======
+                        'old_values': str(old_values),
+                        'new_value': new_value,
+                        'rows_affected': len(affected_rows),
+                        'timestamp': datetime.now().isoformat(),
+                        'source': 'template' if self.template_manager and param in ['structure_owner', 'structure_type', 'tx_type', 'name'] else 'algorithm'
+>>>>>>> Stashed changes
                     }
 
                     corrections_made.append(correction_record)
@@ -539,7 +685,13 @@ class RFDataCorrectionEngine:
         mask_consolidated = self.df_physical['station_id'] == station_id
         if mask_consolidated.any():
             for param, new_value in correct_values.items():
+<<<<<<< Updated upstream
                 if param in ['station_id', 'discrepancy_score'] or new_value is None:
+=======
+                if param in ['station_id', 'discrepancy_score', 'has_extended_cells']:
+                    continue
+                if skip_coords and param in ['latitude', 'longitude']:
+>>>>>>> Stashed changes
                     continue
                 if param in self.df_physical.columns:
                     self.df_physical.loc[mask_consolidated, param] = new_value
@@ -580,6 +732,8 @@ class RFDataCorrectionEngine:
                 
             except Exception as e:
                 self.logger.error(f"Error procesando {station_id}: {str(e)}")
+                import traceback
+                self.logger.error(traceback.format_exc())
                 continue
         
         self.corrections_log = all_corrections
@@ -626,7 +780,9 @@ class RFDataCorrectionEngine:
                 'total_stations': df_corrections['station_id'].nunique(),
                 'total_corrections': len(df_corrections),
                 'total_rows_affected': df_corrections['rows_affected'].sum(),
-                'parameters_corrected': df_corrections.groupby('parameter').size().to_dict(),
+                'corrections_from_template': (df_corrections.get('source', pd.Series(['algorithm'])) == 'template').sum(),
+                'corrections_from_algorithm': (df_corrections.get('source', pd.Series(['algorithm'])) == 'algorithm').sum(),
+                'extended_cells_detected': len(self.extended_cells_detected),
                 'execution_time': datetime.now().isoformat()
             }
         else:
@@ -634,12 +790,15 @@ class RFDataCorrectionEngine:
                 'total_stations': 0,
                 'total_corrections': 0,
                 'total_rows_affected': 0,
-                'parameters_corrected': {},
+                'corrections_from_template': 0,
+                'corrections_from_algorithm': 0,
+                'extended_cells_detected': len(self.extended_cells_detected),
                 'execution_time': datetime.now().isoformat()
             }
         
-        # Crear DataFrame de revisión manual
+        # Crear DataFrames adicionales
         df_manual_review = pd.DataFrame(self.manual_review_required) if self.manual_review_required else pd.DataFrame()
+        df_extended_cells = pd.DataFrame(self.extended_cells_detected) if self.extended_cells_detected else pd.DataFrame()
         
         # Guardar en Excel con múltiples hojas
         with pd.ExcelWriter(report_file, engine='xlsxwriter') as writer:
@@ -661,19 +820,26 @@ class RFDataCorrectionEngine:
                     'rows_affected': 'sum'
                 }).rename(columns={'station_id': 'stations_affected'})
                 param_stats.to_excel(writer, sheet_name='parameter_statistics')
+            
+            # Hoja 5: Extended Cells
+            if len(df_extended_cells) > 0:
+                df_extended_cells.to_excel(writer, sheet_name='extended_cells', index=False)
         
         self.logger.info(f"✓ Reporte de correcciones guardado: {report_file}")
         
         # Imprimir resumen en consola
-        print("\n" + "="*60)
+        print("\n" + "="*70)
         print("RESUMEN DE CORRECCIONES")
-        print("="*60)
-        print(f"Estaciones corregidas: {summary['total_stations']}")
-        print(f"Total de correcciones: {summary['total_corrections']}")
-        print(f"Filas afectadas: {summary['total_rows_affected']}")
+        print("="*70)
+        print(f"Estaciones corregidas:        {summary['total_stations']}")
+        print(f"Total de correcciones:        {summary['total_corrections']}")
+        print(f"  - Desde template:           {summary['corrections_from_template']}")
+        print(f"  - Desde algoritmo:          {summary['corrections_from_algorithm']}")
+        print(f"Filas afectadas:              {summary['total_rows_affected']}")
+        print(f"Extended Cells detectados:    {summary['extended_cells_detected']}")
         
         if self.manual_review_required:
             print(f"\n⚠️  ATENCIÓN: {len(self.manual_review_required)} estaciones requieren revisión manual")
             print("   Ver hoja 'manual_review_required' en el reporte")
         
-        print("="*60)
+        print("="*70)
