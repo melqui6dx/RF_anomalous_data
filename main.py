@@ -186,8 +186,34 @@ def main():
     except Exception as e:
         print(f"   ⚠️  Advertencia en validaciones: {e}")
         logger.warning(f"Error en validaciones: {e}")
+
+    # Al final de main.py, antes del resumen final:
+
+    # 11. (OPCIONAL) Rellenar campos en blanco
+    print("\n🔧 ¿Desea rellenar campos en blanco? (structure_owner, structure_type, tx_type)")
+    user_input = input("Responder (s/n): ").strip().lower()
     
-    # 11. Resumen final
+    if user_input in ['s', 'y', 'yes', 'si', 'sí']:
+        print("\n🔧 Rellenando campos en blanco...")
+        try:
+            from src.blank_filler import BlankFieldFiller
+            
+            filler = BlankFieldFiller(config, template_file)
+            
+            filled_file = os.path.join(
+                config['output_files']['corrected_data_dir'],
+                f'{timestamp}_table_physical_parameters_complete.xlsx'
+            )
+            
+            filler.process_file(corrected_file, filled_file, physical_params_file)
+            
+            print(f"   ✓ Archivo completado: {os.path.basename(filled_file)}")
+            
+        except Exception as e:
+            print(f"   ⚠️  Error rellenando campos: {e}")
+            logger.warning(f"Error en rellenado de campos: {e}")
+    
+    # 12. Resumen final
     logger.info("="*70)
     logger.info("FIN DE EJECUCIÓN")
     logger.info("="*70)
